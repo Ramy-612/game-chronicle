@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+:root {
+  background: #171a21;
+  color: #ffffff;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: #171a21;
+  color: #ffffff;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: #66c0f4;
+  color: #171a21;
+}
+
+.game-card {
+  cursor: pointer;
+}
+
+.game-card img {
+  filter: brightness(0.9);
+}
+
+.game-card:hover img {
+  filter: brightness(1);
+}
