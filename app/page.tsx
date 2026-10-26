@@ -1,7 +1,27 @@
 "use client";
 
+
 import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
+
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+
+import {
+  SortableContext,
+  useSortable,
+  rectSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
+
 
 type Game = {
   id: string;
@@ -11,18 +31,22 @@ type Game = {
   progress: number | null;
   completed_at: string | null;
   created_at?: string;
+  sort_order: number;
 };
+
 
 function GameCard({
   title,
   cover,
   progress,
+  onEdit,
   onEditProgress,
   onDelete,
 }: {
   title: string;
   cover: string | null;
   progress?: number | null;
+  onEdit?: () => void;
   onEditProgress?: () => void;
   onDelete?: () => void;
 }) {
@@ -42,32 +66,45 @@ function GameCard({
         )}
 
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+       
+{progress !== undefined && progress !== null && (
+  <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-3 py-3 backdrop-blur-[2px]">
+    <div className="flex items-center gap-3">
+      <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[#2a2e35]">
+        <div
+          className="h-full rounded-full bg-[#66c0f4]"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
 
-        {progress !== undefined && progress !== null && (
-          <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-3 py-3 backdrop-blur-[2px]">
-            <div className="mb-2 flex items-center justify-between text-xs">
-              <span className="text-[#c7d5e0]">NOW PLAYING</span>
-              <span className="font-medium text-white">
-                {progress}%
-              </span>
-            </div>
+      <span className="w-9 shrink-0 text-right text-xs font-medium text-white">
+        {progress}%
+      </span>
+    </div>
+  </div>
+)}
 
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#2a2e35]">
-              <div
-                className="h-full bg-[#66c0f4]"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
-        <h3 className="min-w-0 truncate text-[15px] font-medium text-[#d6d7d8] transition-colors group-hover:text-white">
+        <h3 className="min-w-0 truncate text-[13px] font-medium text-[#d6d7d8] transition-colors group-hover:text-white">
           {title}
         </h3>
 
         <div className="flex shrink-0 items-center gap-2">
+          {onEdit && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit();
+              }}
+              className="text-xs text-[#a6b3c2] transition hover:text-white"
+            >
+              资料
+            </button>
+          )}
+
           {onEditProgress && (
             <button
               type="button"
@@ -77,7 +114,7 @@ function GameCard({
               }}
               className="text-xs text-[#66c0f4] transition hover:text-white"
             >
-              编辑
+              进度
             </button>
           )}
 
@@ -98,6 +135,43 @@ function GameCard({
     </article>
   );
 }
+
+
+function SortableGameCard({
+  game,
+  children,
+}: {
+  game: Game;
+  children: React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: game.id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    cursor: "grab",
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+    >
+      {children}
+    </div>
+  );
+}
+
 
 function SectionTitle({
   title,
@@ -135,6 +209,16 @@ export default function Home() {
   const [progressInput, setProgressInput] = useState("");
   const [savingProgress, setSavingProgress] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
+  const [showEditGame, setShowEditGame] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editCover, setEditCover] = useState("");
+  const [editCoverFile, setEditCoverFile] = useState<File | null>(null);
+  const [editStatus, setEditStatus] = useState<
+    "playing" | "backlog" | "completed"
+  >("backlog");
+  const [editProgress, setEditProgress] = useState("0");
+  const [editCompletedAt, setEditCompletedAt] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newCover, setNewCover] = useState("");
   const [newCoverFile, setNewCoverFile] = useState<File | null>(null);
@@ -145,28 +229,145 @@ export default function Home() {
   const [newProgress, setNewProgress] = useState("0");
   const [newCompletedAt, setNewCompletedAt] = useState("");
   const [savingGame, setSavingGame] = useState(false); 
+  
+const sensors = useSensors(
+  useSensor(PointerSensor, {
+    activationConstraint: { distance: 8 },
+  }),
+  useSensor(TouchSensor, {
+    activationConstraint: { delay: 200, tolerance: 5 },
+  })
+);
+
+async function handlePlayingDragEnd(event: any) {
+  const { active, over } = event;
+
+  if (!over || active.id === over.id) return;
+
+  const oldIndex = playingGames.findIndex(
+    (game) => game.id === active.id
+  );
+  const newIndex = playingGames.findIndex(
+    (game) => game.id === over.id
+  );
+
+  if (oldIndex < 0 || newIndex < 0) return;
+
+  const reorderedGames = arrayMove(playingGames, oldIndex, newIndex);
+
+  // 先更新页面顺序，让拖拽立即生效
+  setGames((currentGames) => {
+    const otherGames = currentGames.filter(
+      (game) => game.status !== "playing"
+    );
+
+    return [
+      ...otherGames,
+      ...reorderedGames.map((game, index) => ({
+        ...game,
+        sort_order: index + 1,
+      })),
+    ];
+  });
+
+  // 再把新顺序保存到数据库
+  const results = await Promise.all(
+    reorderedGames.map((game, index) =>
+      supabase
+        .from("game_chronicle")
+        .update({ sort_order: index + 1 })
+        .eq("id", game.id)
+    )
+  );
+
+  const failed = results.find((result) => result.error);
+
+  if (failed?.error) {
+    console.error("保存拖拽排序失败：", failed.error);
+    alert(`保存排序失败：${failed.error.message}`);
+  }
+}
+
+
+
+async function handleBacklogDragEnd(event: any) {
+  const { active, over } = event;
+
+  if (!over || active.id === over.id) return;
+
+  const oldIndex = backlogGames.findIndex(
+    (game) => game.id === active.id
+  );
+  const newIndex = backlogGames.findIndex(
+    (game) => game.id === over.id
+  );
+
+  if (oldIndex === -1 || newIndex === -1) return;
+
+  const reorderedGames = arrayMove(
+    backlogGames,
+    oldIndex,
+    newIndex
+  );
+
+  // 只更新待玩分类的顺序，不影响其他分类
+  const updatedGames = reorderedGames.map((game, index) => ({
+    ...game,
+    sort_order: index + 1,
+  }));
+
+  setGames((currentGames) => {
+    const backlogIds = new Set(
+      updatedGames.map((game) => game.id)
+    );
+
+    return [
+      ...currentGames.filter((game) => !backlogIds.has(game.id)),
+      ...updatedGames,
+    ];
+  });
+
+  // 保存每款待玩游戏的新顺序
+  for (let index = 0; index < updatedGames.length; index++) {
+    const game = updatedGames[index];
+
+    const { error } = await supabase
+      .from("game_chronicle")
+      .update({ sort_order: index + 1 })
+      .eq("id", game.id);
+
+    if (error) {
+      console.error("保存待玩游戏排序失败：", error);
+      alert(`保存排序失败：${error.message}`);
+      return;
+    }
+  }
+}
+
   const [deletingGame, setDeletingGame] = useState<Game | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    async function loadGames() {
-      const { data, error } = await supabase
-        .from("game_chronicle")
-        .select("*")
-        .order("created_at", { ascending: true });
+  async function loadGames() {
+    const { data, error } = await supabase
+      .from("game_chronicle")
+      .select("*")
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
 
-      if (error) {
-        console.error("Supabase error:", error);
-        setError(error.message);
-      } else {
-        setGames((data ?? []) as Game[]);
-      }
-
-      setLoading(false);
+    if (error) {
+      console.error("Supabase error:", error);
+      setError(error.message);
+    } else {
+      setGames((data ?? []) as Game[]);
     }
 
-    loadGames();
-  }, []);
+    setLoading(false);
+  }
+
+  loadGames();
+}, []);
+
 
   if (loading) {
     return (
@@ -284,12 +485,20 @@ export default function Home() {
         });
 
       if (uploadError) {
-        console.error("Cover upload error:", uploadError);
-        alert(`封面上传失败：${uploadError.message}`);
-        setUploadingCover(false);
-        setSavingGame(false);
-        return;
-      }
+  console.error("封面上传错误详情：", uploadError);
+  console.error("错误信息：", uploadError.message);
+  console.error("错误名称：", uploadError.name);
+  console.error(
+    "错误状态码：",
+    "statusCode" in uploadError ? uploadError.statusCode : "无"
+  );
+
+  alert(`封面上传失败：${uploadError.message}`);
+
+  setUploadingCover(false);
+  setSavingGame(false);
+  return;
+}
 
       const { data: publicUrlData } = supabase.storage
         .from("game-covers")
@@ -341,6 +550,116 @@ export default function Home() {
 
     setSavingGame(false);
   }
+
+  function openEditGame(game: Game) {
+    setEditingGame(game);
+    setEditTitle(game.title);
+    setEditCover(game.cover_url ?? "");
+    setEditCoverFile(null);
+    setEditStatus(game.status);
+    setEditProgress(String(game.progress ?? 0));
+    setEditCompletedAt(game.completed_at ?? "");
+    setShowEditGame(true);
+  }
+
+  async function saveEditedGame() {
+  if (!editingGame) return;
+
+  if (!editTitle.trim()) {
+    alert("请输入游戏名称。");
+    return;
+  }
+
+  const progressValue = Number(editProgress);
+
+  if (
+    editStatus === "playing" &&
+    (!Number.isInteger(progressValue) ||
+      progressValue < 0 ||
+      progressValue > 100)
+  ) {
+    alert("请输入 0 到 100 之间的整数。");
+    return;
+  }
+
+  setSavingEdit(true);
+
+  let coverUrl = editCover.trim() || null;
+
+  if (editCoverFile) {
+    const fileExt = editCoverFile.name.split(".").pop();
+    const fileName = `${crypto.randomUUID()}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("game-covers")
+      .upload(fileName, editCoverFile, {
+        contentType: editCoverFile.type,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error("Cover upload error:", uploadError);
+      alert(`封面上传失败：${uploadError.message}`);
+      setSavingEdit(false);
+      return;
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from("game-covers")
+      .getPublicUrl(fileName);
+
+    coverUrl = publicUrlData.publicUrl;
+  }
+
+  const finalStatus =
+    editStatus === "playing" && progressValue === 100
+      ? "completed"
+      : editStatus;
+
+  const finalProgress =
+    finalStatus === "completed"
+      ? 100
+      : finalStatus === "playing"
+        ? progressValue
+        : null;
+
+  const finalCompletedAt =
+    finalStatus === "completed"
+      ? editCompletedAt || editingGame.completed_at || new Date().toLocaleDateString("en-CA")
+      : null;
+
+  const { data, error } = await supabase
+    .from("game_chronicle")
+    .update({
+      title: editTitle.trim(),
+      cover_url: coverUrl,
+      status: finalStatus,
+      progress: finalProgress,
+      completed_at: finalCompletedAt,
+    })
+    .eq("id", editingGame.id)
+    .select()
+
+  if (error) {
+    console.error("Edit game error:", error);
+    alert(`保存失败：${error.message}`);
+    setSavingEdit(false);
+    return;
+  }
+
+  setGames((currentGames) =>
+  currentGames.map((game) =>
+    game.id === editingGame.id
+      ? ((data?.[0] as Game) ?? game)
+      : game
+  )
+);
+
+  setShowEditGame(false);
+  setEditingGame(null);
+  setEditCoverFile(null);
+  setSavingEdit(false);
+}
 
   async function deleteGame() {
     if (!deletingGame) return;
@@ -397,37 +716,29 @@ export default function Home() {
     setDeleting(false);
   }
 
-  const completedByMonth = completedGames.reduce(
-    (groups, game) => {
-      if (!game.completed_at) {
-        const key = "未知日期";
+  
+const completedByMonth = completedGames.reduce(
+  (groups, game) => {
+    let key = "未知日期";
 
-        if (!groups[key]) {
-          groups[key] = [];
-        }
+    if (game.completed_at) {
+      const [year, month] = game.completed_at.split("-");
 
-        groups[key].push(game);
-
-        return groups;
+      if (year && month) {
+        key = `${year}年${Number(month)}月`;
       }
+    }
 
-      const date = new Date(game.completed_at);
+    if (!groups[key]) {
+      groups[key] = [];
+    }
 
-      const key = date.toLocaleDateString("zh-CN", {
-        year: "numeric",
-        month: "long",
-      });
+    groups[key].push(game);
 
-      if (!groups[key]) {
-        groups[key] = [];
-      }
-
-      groups[key].push(game);
-
-      return groups;
-    },
-    {} as Record<string, Game[]>
-  );
+    return groups;
+  },
+  {} as Record<string, Game[]>
+);
 
   return (
     <main className="min-h-screen bg-[#171a21] text-white">
@@ -491,51 +802,79 @@ export default function Home() {
           </p >
         </section>
 
-        {/* Now Playing */}
-        <section id="playing" className="mb-14">
-          <SectionTitle
-            title="当前"
-            label="NOW PLAYING"
-            count={playingGames.length}
-          />
+        
+{/* Now Playing */}
+<section id="playing" className="mb-14">
+  <SectionTitle
+    title="当前"
+    label="NOW PLAYING"
+    count={playingGames.length}
+  />
 
-          <div className="grid grid-cols-3 gap-x-4 gap-y-7 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
-            {playingGames.map((game) => (
-              <GameCard
-                key={game.id}
-                title={game.title}
-                cover={game.cover_url}
-                progress={game.progress}
-                onEditProgress={() => {
-                  setEditingGame(game);
-                  setProgressInput(String(game.progress ?? 0));
-                }}
-                onDelete={() => setDeletingGame(game)}
-              />
-            ))}
-          </div>
-        </section>
+  <DndContext
+    sensors={sensors}
+    collisionDetection={closestCenter}
+    onDragEnd={handlePlayingDragEnd}
+  >
+    <SortableContext
+      items={playingGames.map((game) => game.id)}
+      strategy={rectSortingStrategy}
+    >
+      <div className="grid grid-cols-3 gap-x-3 gap-y-6 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-10">
+        {playingGames.map((game) => (
+          <SortableGameCard key={game.id} game={game}>
+            <GameCard
+              title={game.title}
+              cover={game.cover_url}
+              progress={game.progress}
+              onEdit={() => openEditGame(game)}
+              onEditProgress={() => {
+                setEditingGame(game);
+                setProgressInput(String(game.progress ?? 0));
+              }}
+              onDelete={() => setDeletingGame(game)}
+            />
+          </SortableGameCard>
+        ))}
+      </div>
+    </SortableContext>
+  </DndContext>
+</section>
 
-        {/* On the List */}
-        <section id="backlog" className="mb-14">
-          <SectionTitle
-            title="待玩"
-            label="ON THE LIST"
-            count={backlogGames.length}
-          />
+        
+{/* Backlog */}
+<section id="backlog" className="mb-14">
+  <SectionTitle
+    title="待玩"
+    label="BACKLOG"
+    count={backlogGames.length}
+  />
 
-          <div className="grid grid-cols-3 gap-x-4 gap-y-7 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
-            {backlogGames.map((game) => (
-              <GameCard
-                key={game.id}
-                title={game.title}
-                cover={game.cover_url}
-                progress={null}
-                onDelete={() => setDeletingGame(game)}
-              />
-            ))}
-          </div>
-        </section>
+  <DndContext
+    sensors={sensors}
+    collisionDetection={closestCenter}
+    onDragEnd={handleBacklogDragEnd}
+  >
+    <SortableContext
+      items={backlogGames.map((game) => game.id)}
+      strategy={rectSortingStrategy}
+    >
+      <div className="grid grid-cols-3 gap-x-3 gap-y-6 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-10">
+        {backlogGames.map((game) => (
+          <SortableGameCard key={game.id} game={game}>
+            <GameCard
+              title={game.title}
+              cover={game.cover_url}
+              onEdit={() => openEditGame(game)}
+              onDelete={() => setDeletingGame(game)}
+            />
+          </SortableGameCard>
+        ))}
+      </div>
+    </SortableContext>
+  </DndContext>
+</section>
+
 
         {/* Done */}
         <section id="completed" className="pb-16">
@@ -555,13 +894,14 @@ export default function Home() {
                 <div className="h-px flex-1 bg-[#2a2e35]" />
               </div>
 
-              <div className="grid grid-cols-3 gap-x-4 gap-y-7 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
+              <div className="grid grid-cols-3 gap-x-3 gap-y-6 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-10">
                 {monthGames.map((game) => (
                   <GameCard
                     key={game.id}
                     title={game.title}
                     cover={game.cover_url}
                     progress={null}
+                    onEdit={() => openEditGame(game)}
                     onDelete={() => setDeletingGame(game)}
                   />
                 ))}
@@ -804,6 +1144,146 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      
+{showEditGame && editingGame && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 px-6 py-8">
+    <div className="my-auto w-full max-w-lg rounded-lg border border-[#2a2e35] bg-[#20242b] p-6 shadow-2xl">
+      <h2 className="text-lg font-semibold text-white">
+        编辑游戏资料
+      </h2>
+
+      <div className="mt-6 space-y-5">
+        <div>
+          <label className="mb-2 block text-sm text-[#c7d5e0]">
+            游戏名称
+          </label>
+          <input
+            type="text"
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            className="w-full rounded border border-[#363c45] bg-[#171a21] px-3 py-2 text-sm text-white outline-none focus:border-[#66c0f4]"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-[#c7d5e0]">
+            更换封面图片
+          </label>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) =>
+              setEditCoverFile(e.target.files?.[0] ?? null)
+            }
+            className="w-full text-sm text-[#c7d5e0] file:mr-3 file:rounded file:border-0 file:bg-[#363c45] file:px-3 file:py-2 file:text-white"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-[#c7d5e0]">
+            或输入封面图片 URL
+          </label>
+          <input
+            type="url"
+            value={editCover}
+            onChange={(e) => {
+              setEditCover(e.target.value);
+              setEditCoverFile(null);
+            }}
+            placeholder="https://..."
+            className="w-full rounded border border-[#363c45] bg-[#171a21] px-3 py-2 text-sm text-white outline-none focus:border-[#66c0f4]"
+          />
+        </div>
+
+        {editCover && (
+          <div>
+            <p className="mb-2 text-sm text-[#c7d5e0]">当前封面预览</p >
+            <img
+              src={editCover}
+              alt="封面预览"
+              className="h-40 rounded object-contain"
+            />
+          </div>
+        )}
+
+        <div>
+          <label className="mb-2 block text-sm text-[#c7d5e0]">
+            游戏状态
+          </label>
+          <select
+            value={editStatus}
+            onChange={(e) =>
+              setEditStatus(
+                e.target.value as "playing" | "backlog" | "completed"
+              )
+            }
+            className="w-full rounded border border-[#363c45] bg-[#171a21] px-3 py-2 text-sm text-white outline-none focus:border-[#66c0f4]"
+          >
+            <option value="playing">当前游戏</option>
+            <option value="backlog">待玩</option>
+            <option value="completed">已通关</option>
+          </select>
+        </div>
+
+        {editStatus === "playing" && (
+          <div>
+            <label className="mb-2 block text-sm text-[#c7d5e0]">
+              游戏进度（0–100）
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={editProgress}
+              onChange={(e) => setEditProgress(e.target.value)}
+              className="w-full rounded border border-[#363c45] bg-[#171a21] px-3 py-2 text-sm text-white outline-none focus:border-[#66c0f4]"
+            />
+          </div>
+        )}
+
+        {editStatus === "completed" && (
+          <div>
+            <label className="mb-2 block text-sm text-[#c7d5e0]">
+              通关日期
+            </label>
+            <input
+              type="date"
+              value={editCompletedAt}
+              onChange={(e) => setEditCompletedAt(e.target.value)}
+              className="w-full rounded border border-[#363c45] bg-[#171a21] px-3 py-2 text-sm text-white outline-none focus:border-[#66c0f4]"
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="mt-7 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setShowEditGame(false);
+            setEditingGame(null);
+            setEditCoverFile(null);
+          }}
+          disabled={savingEdit}
+          className="rounded bg-[#2a2e35] px-4 py-2 text-sm text-[#c7d5e0] transition hover:bg-[#363c45] disabled:opacity-50"
+        >
+          取消
+        </button>
+
+        <button
+          type="button"
+          onClick={saveEditedGame}
+          disabled={savingEdit}
+          className="rounded bg-[#1a9fff] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#1687d9] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {savingEdit ? "保存中……" : "保存修改"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       {deletingGame && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-6">
